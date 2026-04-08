@@ -1,0 +1,3 @@
+#!/bin/sh
+docker build -t test-app .
+docker run -p 8080:8080 test-app

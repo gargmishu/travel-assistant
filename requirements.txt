@@ -1,0 +1,7 @@
+fastapi
+uvicorn
+python-dotenv
+google-genai
+sqlalchemy
+google-cloud-alloydb-connector
+pg8000
