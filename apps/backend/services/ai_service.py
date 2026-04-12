@@ -4,6 +4,7 @@ from apps.backend.config import GCP_PROJECT_ID, REGION, GEMINI_MODEL
 import json
 import asyncio
 from google.adk import Agent
+from google.adk.models.google_llm import Gemini
 from google.adk.agents import ParallelAgent, SequentialAgent
 from google.adk.tools.tool_context import ToolContext
 # from google.adk.tools.invocation_context import InvocationContext
@@ -15,6 +16,13 @@ from typing import List, Dict, Any
 # Configure the logger
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+retry_config = types.HttpRetryOptions(
+    attempts=5,          # Maximum retry attempts
+    exp_base=7.0,        # Delay multiplier
+    initial_delay=1.0,   # Initial delay in seconds
+    http_status_codes=[429, 500, 503, 504]
+)
 
 
 def load_trip_context(
@@ -37,12 +45,12 @@ class AIService:
             project=GCP_PROJECT_ID, 
             location=REGION
         )
-        self.model_name = GEMINI_MODEL
+        self.model = Gemini(model=GEMINI_MODEL, retry_options=retry_config)
 
         # 0. Data loader agent
         self.loader_agent = Agent(
             name="LoaderAgent",
-            model=self.model_name,
+            model=self.model,
             tools=[load_trip_context],
             instruction="""
             You are the Data Entry Specialist. 
@@ -57,12 +65,13 @@ class AIService:
         # 1. Weather Specialist
         self.weather_agent = Agent(
             name="WeatherSpecialist",
-            model=self.model_name   ,
+            model=self.model,
             instruction="""
             You will receive 'trip_data' and 'traveler_profiles in the state. 
 
 
-            # Analyze {trip_data}. Focus ONLY on meteorology.
+            # Analyze {trip_data} and {traveler_profiles}.
+            # Focus ONLY on meteorology.
             Predict temperature swings, precipitation chances, and humidity.
             
             Output your findings as a concise report for the next agent.
@@ -73,7 +82,7 @@ class AIService:
         # 2. Destination & Activities Specialist
         self.places_agent = Agent(
             name="DestinationSpecialist",
-            model=self.model_name,
+            model=self.model,
             instruction="""
             You will receive 'trip_data' and 'traveler_profiles in the state. 
 
@@ -90,11 +99,12 @@ class AIService:
         # 3. Logistics & Rules Specialist
         self.logistics_agent = Agent(
             name="LogisticsSpecialist",
-            model=self.model_name,
+            model=self.model,
             instruction="""
             You will receive 'trip_data' and 'traveler_profiles in the state. 
 
-            Focus on travel rules & restrictions.
+            # Analyze {trip_data} and {traveler_profiles}. 
+            # Focus on travel rules & restrictions.
             Research typical baggage limits for the mode of transport and common customs 
             or travel restrictions for the destination (e.g., medication restrictions, 
             power outlet types, or visa-specific gear).
@@ -107,9 +117,11 @@ class AIService:
         # 4. The Master Synthesizer (The Editor)
         self.synthesizer_agent = Agent(
             name="master_synthesizer",
-            model=self.model_name,
+            model=self.model,
             instruction="""
             You will receive 'trip_data' and 'traveler_profiles in the state. 
+
+            # Analyze {trip_data} and {traveler_profiles}.
 
             You will also receive
 
@@ -148,16 +160,17 @@ class AIService:
             sub_agents=[self.weather_agent, self.places_agent, self.logistics_agent]
         )
 
+        self.travel_workflow = SequentialAgent(
+            name="SmartTravelWorkflow",
+            sub_agents=[self.loader_agent, self.research_phase, self.synthesizer_agent]
+        )
+
+
     async def generate_smart_tips(self, trip_data: dict, traveler_profiles: list) -> dict:
         """
         Executes the logic-only agentic workflow.
         """
         
-        travel_workflow = SequentialAgent(
-            name="SmartTravelWorkflow",
-            # tools=[add_trip_details_to_state],
-            sub_agents=[self.loader_agent, self.research_phase, self.synthesizer_agent]
-        )
 
         # Get app name from the Runner
         app_name = "TravelAssistant"
@@ -197,7 +210,7 @@ class AIService:
             
             # 4. Initialize the Runner
             runner = Runner(
-                agent=travel_workflow, 
+                agent=self.travel_workflow, 
                 app_name=app_name,
                 session_service=session_service
             )   
@@ -225,10 +238,14 @@ class AIService:
                 return {"error": "Workflow failed to generate a response"}
             
             # final_output = response.text
+        
+            logger.info(f"response = {response}")
             return response
-            # logger.info(f"response = {response}")
+            # logger.info(f"response.keys = {response.keys()}")
+            
             # # 6. Extract the result from the response state
             # final_output = response.state.get("final_json")
+            
             
             # # Fallback if final_json is missing from state but present in text
             # if not final_output:
