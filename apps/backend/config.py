@@ -9,6 +9,7 @@ load_dotenv()
 
 GCP_PROJECT_ID = os.getenv("GCP_PROJECT_ID")
 REGION = os.getenv("REGION")
+DB_REGION = os.getenv("DB_REGION")
 CLUSTER_ID = os.getenv("CLUSTER_ID")
 INSTANCE_ID = os.getenv("INSTANCE_ID")
 DB_NAME = os.getenv("DB_NAME")

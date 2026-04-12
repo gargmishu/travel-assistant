@@ -1,8 +1,19 @@
+import os
 from fastapi import APIRouter, Depends
 from apps.backend.services.ai_service import AIService
 from apps.backend.services.db_service import get_db_timestamp
 
+
 router = APIRouter()
+
+
+@router.get("/test-ai")
+def test_ai():
+    return {"project": GCP_PROJECT_ID, "model": GEMINI_MODEL}
+
+@router.get("/env-check")
+async def check_env():
+    return {"K_SERVICE": os.getenv("K_SERVICE", "Not set (Local)")}
 
 @router.get("/tip")
 async def get_tip(prompt: str = "Give me a quick travel tip", ai_service: AIService = Depends()):
