@@ -7,7 +7,6 @@ from google.adk import Agent
 from google.adk.models.google_llm import Gemini
 from google.adk.agents import ParallelAgent, SequentialAgent
 from google.adk.tools.tool_context import ToolContext
-# from google.adk.tools.invocation_context import InvocationContext
 import logging
 from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
@@ -23,6 +22,21 @@ retry_config = types.HttpRetryOptions(
     initial_delay=1.0,   # Initial delay in seconds
     http_status_codes=[429, 500, 503, 504]
 )
+
+generate_content_config = types.GenerateContentConfig(
+    temperature=0.7,
+    response_mime_type="application/json"
+)
+
+def get_workflow_output(response):
+    # The last element in the list is the completion of the SequentialAgent
+    last_event = response[-1]
+    
+    actions = last_event.get("actions", {})
+    state_delta = actions.get("state_delta", {})
+    final_json = state_delta.get("final_json", {})
+
+    return final_json
 
 
 def load_trip_context(
@@ -66,6 +80,7 @@ class AIService:
         self.weather_agent = Agent(
             name="WeatherSpecialist",
             model=self.model,
+            generate_content_config=generate_content_config,
             instruction="""
             You will receive 'trip_data' and 'traveler_profiles in the state. 
 
@@ -83,6 +98,7 @@ class AIService:
         self.places_agent = Agent(
             name="DestinationSpecialist",
             model=self.model,
+            generate_content_config=generate_content_config,
             instruction="""
             You will receive 'trip_data' and 'traveler_profiles in the state. 
 
@@ -118,6 +134,7 @@ class AIService:
         self.synthesizer_agent = Agent(
             name="master_synthesizer",
             model=self.model,
+            generate_content_config=generate_content_config,
             instruction="""
             You will receive 'trip_data' and 'traveler_profiles in the state. 
 
@@ -162,6 +179,7 @@ class AIService:
 
         self.travel_workflow = SequentialAgent(
             name="SmartTravelWorkflow",
+            # tools=[load_trip_context],
             sub_agents=[self.loader_agent, self.research_phase, self.synthesizer_agent]
         )
 
@@ -170,7 +188,6 @@ class AIService:
         """
         Executes the logic-only agentic workflow.
         """
-        
 
         # Get app name from the Runner
         app_name = "TravelAssistant"
@@ -190,7 +207,6 @@ class AIService:
                 session = await session_service.get_session(
                     app_name=app_name, user_id=USER_ID, session_id=session_name
                 )
-            
 
             # 3. Inject your data into the session state
             # logger.info(f"Blank Session State: {session.state}")
@@ -227,42 +243,24 @@ class AIService:
                 After initializing, generate my packing list.
                 """
             query = types.Content(role="user", parts=[types.Part(text=prompt_text)])
-            response = runner.run(
+            response_generator = runner.run(
                 user_id=USER_ID,
                 session_id=session.id,
                 new_message=query,
             )
 
+            # Use a list comprehension to convert all Event objects to dictionaries
+            # This handles the 'not subscriptable' error for the whole response
+            response = [
+                step.model_dump() if hasattr(step, "model_dump") else vars(step) 
+                for step in response_generator
+            ]
+
             if response is None:
                 logger.error("Runner returned None. Check agent logs for model invocation errors.")
                 return {"error": "Workflow failed to generate a response"}
             
-            # final_output = response.text
-        
-            logger.info(f"response = {response}")
-            return response
-            # logger.info(f"response.keys = {response.keys()}")
-            
-            # # 6. Extract the result from the response state
-            # final_output = response.state.get("final_json")
-            
-            
-            # # Fallback if final_json is missing from state but present in text
-            # if not final_output:
-            #     final_output = response.text
-            
-            # if isinstance(final_output, str):
-            #     clean_json = final_output.strip().replace("```json", "").replace("```", "")
-            #     return json.loads(clean_json)
-            
-            # return final_output
-            # print(response.text)
-            # # This triggers the sequential hand-off between agents
-            # raw_output = await self.travel_workflow. (state=initial_data)
-            
-            # Basic cleaning in case the model ignores instructions and adds backticks
-            # clean_json = raw_output.strip().replace("```json", "").replace("```", "")
-            # return json.loads(clean_json)
+            return get_workflow_output(response)
             
         except Exception as e:
             logger.error(f"hello, hello... Agentic Workflow failed again: {e}")

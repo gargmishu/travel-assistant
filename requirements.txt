@@ -6,3 +6,4 @@ sqlalchemy
 google-cloud-alloydb-connector
 pg8000
 google-adk
+google-generativeai
