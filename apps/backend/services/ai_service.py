@@ -33,23 +33,19 @@ def get_workflow_output(response):
     last_event = response[-1]
     
     actions = last_event.get("actions", {})
-    state_delta = actions.get("state_delta", {})
-    final_json = state_delta.get("final_json", {})
 
-    return final_json
+    # Check both naming conventions just in case
+    state_delta = actions.get("stateDelta") or actions.get("state_delta") or {}
 
+    final_json_str = state_delta.get("final_json")
 
-def load_trip_context(
-    tool_context: ToolContext,
-    trip_data: Dict[str, Any],
-    traveler_profiles: List[Dict[str, Any]]
-) -> dict[str, str]:
-    """Saves the trip details & traveler profiles to the state.""" 
+    if final_json_str:
+        try:
+            return json.loads(final_json_str)
+        except (json.JSONDecodeError, TypeError):
+            return {"raw_output": final_json_str}
 
-    tool_context.state["trip_data"] = trip_data
-    tool_context.state["traveler_profiles"] = traveler_profiles
-
-    return {"status": "success"}
+    return {"error": "final_json not found in state", "debug": state_delta}
 
 
 class AIService:
@@ -61,32 +57,16 @@ class AIService:
         )
         self.model = Gemini(model=GEMINI_MODEL, retry_options=retry_config)
 
-        # 0. Data loader agent
-        self.loader_agent = Agent(
-            name="LoaderAgent",
-            model=self.model,
-            tools=[load_trip_context],
-            instruction="""
-            You are the Data Entry Specialist. 
-            1. Extract 'trip_data' and 'traveler_profiles' from the user's message.
-            2. Call 'load_trip_context' with these exact objects.
-            3. Once successful, confirm that the context is set.
-            DO NOT perform any travel analysis; simply load the data.
-            """,
-            output_key="load_status"
-        )
-
         # 1. Weather Specialist
         self.weather_agent = Agent(
             name="WeatherSpecialist",
             model=self.model,
             generate_content_config=generate_content_config,
             instruction="""
-            You will receive 'trip_data' and 'traveler_profiles in the state. 
+            You're weather specialist.
+            Extract 'trip_data' and 'traveler_profiles' from the user's message & analyze it.
 
-
-            # Analyze {trip_data} and {traveler_profiles}.
-            # Focus ONLY on meteorology.
+            Focus on meterology.
             Predict temperature swings, precipitation chances, and humidity.
             
             Output your findings as a concise report for the next agent.
@@ -100,7 +80,8 @@ class AIService:
             model=self.model,
             generate_content_config=generate_content_config,
             instruction="""
-            You will receive 'trip_data' and 'traveler_profiles in the state. 
+            You're a travel agent & local specialist.
+            Extract 'trip_data' and 'traveler_profiles' from the user's message & analyze it.
 
             Focus on geography and activities.
             Identify if the trip involves steep terrain, water activities, or formal urban settings.
@@ -117,10 +98,10 @@ class AIService:
             name="LogisticsSpecialist",
             model=self.model,
             instruction="""
-            You will receive 'trip_data' and 'traveler_profiles in the state. 
+            You're a Logistics expert
+            Extract 'trip_data' and 'traveler_profiles' from the user's message & analyze it.
 
-            # Analyze {trip_data} and {traveler_profiles}. 
-            # Focus on travel rules & restrictions.
+            Focus on travel rules & restrictions.
             Research typical baggage limits for the mode of transport and common customs 
             or travel restrictions for the destination (e.g., medication restrictions, 
             power outlet types, or visa-specific gear).
@@ -136,9 +117,7 @@ class AIService:
             model=self.model,
             generate_content_config=generate_content_config,
             instruction="""
-            You will receive 'trip_data' and 'traveler_profiles in the state. 
-
-            # Analyze {trip_data} and {traveler_profiles}.
+            Extract 'trip_data' and 'traveler_profiles' from the user's message & analyze it.
 
             You will also receive
 
@@ -179,8 +158,7 @@ class AIService:
 
         self.travel_workflow = SequentialAgent(
             name="SmartTravelWorkflow",
-            # tools=[load_trip_context],
-            sub_agents=[self.loader_agent, self.research_phase, self.synthesizer_agent]
+            sub_agents=[self.research_phase, self.synthesizer_agent]
         )
 
 
@@ -192,7 +170,7 @@ class AIService:
         # Get app name from the Runner
         app_name = "TravelAssistant"
         USER_ID = "default_user"
-        session_name = "current_trip_session"
+        session_id = "current_trip_session"
 
         try:
             # 1. Setup a session service (to remember context)
@@ -201,37 +179,19 @@ class AIService:
             # 2. Attempt to create a new session or retrieve an existing one
             try:
                 session = await session_service.create_session(
-                    app_name=app_name, user_id=USER_ID, session_id=session_name
+                    app_name=app_name, user_id=USER_ID, session_id=session_id
                 )
             except:
-                session = await session_service.get_session(
-                    app_name=app_name, user_id=USER_ID, session_id=session_name
-                )
-
-            # 3. Inject your data into the session state
-            # logger.info(f"Blank Session State: {session.state}")
-            # serializable_state = json.loads(json.dumps({
-            #     "trip_data": trip_data,
-            #     "traveler_profiles": traveler_profiles
-            # }, default=str))
-            # session.state.update(serializable_state)
+                session = await session_service.get_session(session_id)
             
-            # session.state["trip_data"] = serializable_state["trip_data"]
-            # session.state["traveler_profiles"] = serializable_state["traveler_profiles"]
-            # # Check if your service needs an explicit save
-            # if hasattr(session_service, 'update_session'):
-            #     await session_service.update_session(session)
-            # logger.info(f"Verified Session Keys: {session.state.keys()}")
-            # logger.info(f"Updated Session State: {session.state}")
-            
-            # 4. Initialize the Runner
+            # 3. Initialize the Runner
             runner = Runner(
                 agent=self.travel_workflow, 
                 app_name=app_name,
                 session_service=session_service
             )   
 
-            # 5. Run the workflow
+            # 4. Run the workflow
             serializable_state = json.loads(json.dumps({
                 "trip_data": trip_data,
                 "traveler_profiles": traveler_profiles
@@ -249,6 +209,7 @@ class AIService:
                 new_message=query,
             )
 
+            # 5. Process the response
             # Use a list comprehension to convert all Event objects to dictionaries
             # This handles the 'not subscriptable' error for the whole response
             response = [
