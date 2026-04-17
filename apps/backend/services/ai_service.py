@@ -38,8 +38,27 @@ weather_mcp = McpToolset(
         server_params=StdioServerParameters(
             command="npx",
             args=["-y", "@smithery/mcp-weatherserver"],
-            # If you were using an API key, it goes in 'env'
-            # env={"WEATHER_API_KEY": "your_key"} 
+        )
+    )
+)
+
+# Initialize the Google Maps MCP
+maps_mcp = McpToolset(
+    connection_params=StdioConnectionParams(
+        server_params=StdioServerParameters(
+            command="npx",
+            args=["-y", "@google/mcp-server-google-maps"],
+            env={"GOOGLE_MAPS_API_KEY": "YOUR_API_KEY"}
+        )
+    )
+)
+
+# OpenStreetMap Toolset (for terrain/hiking/paths)
+open_street_map_mcp = McpToolset(
+    connection_params=StdioConnectionParams(
+        server_params=StdioServerParameters(
+            command="npx",
+            args=["-y", "@smithery/mcp-osm-server"]
         )
     )
 )
@@ -100,15 +119,17 @@ class AIService:
         self.places_agent = Agent(
             name="DestinationSpecialist",
             model=self.model,
+            tools=[maps_mcp, open_street_map_mcp],
             generate_content_config=generate_content_config,
             instruction="""
             You're a travel agent & local specialist.
             Extract 'trip_data' and 'traveler_profiles' from the user's message & analyze it.
 
             Focus on geography and activities.
-            Identify if the trip involves steep terrain, water activities, or formal urban settings.
-            Suggest if walking intensity will be high. 
-            Identify the terrain and suggest 3 must-do activities.
+            1. Use Google Maps to find 3 must-do activities and identify formal/urban settings.
+            2. Use OpenStreetMap to verify terrain steepness and path surface types.
+            3. Predict walking intensity based on elevation gain and ground surface.
+            4. Suggest 3 must-do activities.
 
             Output your findings as a concise report for the next agent.
             """,
@@ -153,7 +174,8 @@ class AIService:
             {logistics_report}
             
             Create a comprehensive packing list in STRICT JSON format.
-            Ensure the 'gear' section accounts for both the terrain and the travel rules.
+            Include the number of items wherever possible; ex: 5 T-shirt, 3 pants
+            Be as specific as possible.
 
              STRICT OUTPUT RULES:
             - Return ONLY valid JSON.
@@ -163,9 +185,14 @@ class AIService:
             JSON Structure:
             {
               "clothing": { "logic": "explanation", "items": [] },
-              "accessories": [],
-              "medical": { "traveler_specific_notes": [], "kit_additions": [] },
-              "gear": []
+              "undergarments": { "logic": "explanation", "items": [] },
+              "accessories": { "logic": "explanation", "items": [] },
+              "toilteries": { "logic": "explanation", "items": [] },
+              "traveler_medical_needs": [ "<traveler_id>": { "logic": "explanation", "items[]}],
+              "first_aid_items": { "logic": "explanation", "items": [] },
+              "gear": { "logic": "explanation", "items": [] },
+              "places_to_visit: { "logic": "explanation", "items": [] }
+              "activities_to_do": { "logic": "explanation", "items": [] }
             }
             """,
             output_key="final_json"
