@@ -3,6 +3,7 @@ from google.adk import Agent
 from google.adk.tools import McpToolset
 from google.genai import types
 from apps.backend.config import GCP_PROJECT_ID, REGION, GEMINI_MODEL
+from google.adk.tools.mcp_tool.mcp_session_manager import SseConnectionParams
 import json
 import asyncio
 from google.adk import Agent
@@ -62,6 +63,20 @@ open_street_map_mcp = McpToolset(
         )
     )
 )
+
+# Initialize the Vertex AI Search MCP Toolset
+# This tool allows the agent to perform RAG on your specific Data Store
+rag_search_tool = McpToolset(
+            # Wrap the URL inside SseConnectionParams
+            connection_params=SseConnectionParams(
+                url="https://discoveryengine.googleapis.com/mcp"
+            )
+        )
+
+# McpToolset(
+#     url="https://discoveryengine.googleapis.com/mcp",
+#     # The ADK handles authentication via your GCP environment automatically
+# )
 
 def get_workflow_output(response):
     # The last element in the list is the completion of the SequentialAgent
@@ -140,16 +155,15 @@ class AIService:
         self.logistics_agent = Agent(
             name="LogisticsSpecialist",
             model=self.model,
+            tools=[rag_search_tool],
             instruction="""
-            You're a Logistics expert
-            Extract 'trip_data' and 'traveler_profiles' from the user's message & analyze it.
-
-            Focus on travel rules & restrictions.
-            Research typical baggage limits for the mode of transport and common customs 
-            or travel restrictions for the destination (e.g., medication restrictions, 
-            power outlet types, or visa-specific gear).
-
-            Output your findings as a concise report for the next agent.
+                You are a Logistics and Customs expert. 
+                When asked about travel rules, visa requirements, or baggage limits:
+                1. Use the 'search' tool to query the enterprise data store.
+                2. Analyze the retrieved snippets for official policy data.
+                3. Synthesize a concise report including URLs for citations.
+                4. If the data store does not contain the answer, explicitly state that 
+                no official record was found.
             """,
             output_key="logistics_report"
         )
@@ -173,7 +187,7 @@ class AIService:
             **Logistic information:**
             {logistics_report}
             
-            Create a comprehensive packing list in STRICT JSON format.
+            Create a comprehensive packing list per traveler in STRICT JSON format
             Include the number of items wherever possible; ex: 5 T-shirt, 3 pants
             Be as specific as possible.
 
@@ -182,18 +196,24 @@ class AIService:
             - No markdown formatting (no ```json).
             - Ensure 'medical' notes address specific traveler needs found in traveler_profiles.
             
-            JSON Structure:
+            JSON Structure per traveler: let's call it `traveler_packing_list`
             {
               "clothing": { "logic": "explanation", "items": [] },
               "undergarments": { "logic": "explanation", "items": [] },
               "accessories": { "logic": "explanation", "items": [] },
               "toilteries": { "logic": "explanation", "items": [] },
-              "traveler_medical_needs": [ "<traveler_id>": { "logic": "explanation", "items[]}],
+              "traveler_medical_needs": { "logic": "explanation", "items[]},
               "first_aid_items": { "logic": "explanation", "items": [] },
+              "generic_medical_items": { "logic": "explanation", "items": [] },
               "gear": { "logic": "explanation", "items": [] },
               "places_to_visit: { "logic": "explanation", "items": [] }
               "activities_to_do": { "logic": "explanation", "items": [] }
             }
+
+            final JSON Structure:
+            [
+              "<traveler_name>": <traveler_packing_list>
+            ]
             """,
             output_key="final_json"
         )
