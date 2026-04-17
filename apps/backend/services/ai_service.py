@@ -1,10 +1,14 @@
 from google import genai
+from google.adk import Agent
+from google.adk.tools import McpToolset
 from google.genai import types
 from apps.backend.config import GCP_PROJECT_ID, REGION, GEMINI_MODEL
 import json
 import asyncio
 from google.adk import Agent
 from google.adk.models.google_llm import Gemini
+from google.adk.tools.mcp_tool import McpToolset, StdioConnectionParams
+from mcp import StdioServerParameters
 from google.adk.agents import ParallelAgent, SequentialAgent
 from google.adk.tools.tool_context import ToolContext
 import logging
@@ -26,6 +30,18 @@ retry_config = types.HttpRetryOptions(
 generate_content_config = types.GenerateContentConfig(
     temperature=0.7,
     response_mime_type="application/json"
+)
+
+# Initialize the Open-Meteo MCP (No Key Required)
+weather_mcp = McpToolset(
+    connection_params=StdioConnectionParams(
+        server_params=StdioServerParameters(
+            command="npx",
+            args=["-y", "@smithery/mcp-weatherserver"],
+            # If you were using an API key, it goes in 'env'
+            # env={"WEATHER_API_KEY": "your_key"} 
+        )
+    )
 )
 
 def get_workflow_output(response):
@@ -61,14 +77,20 @@ class AIService:
         self.weather_agent = Agent(
             name="WeatherSpecialist",
             model=self.model,
+            tools=[weather_mcp],
             generate_content_config=generate_content_config,
             instruction="""
-            You're weather specialist.
+            You're a long-range weather specialist.
             Extract 'trip_data' and 'traveler_profiles' from the user's message & analyze it.
+    
+            1. Extract 'trip_data' and locations.
+            2. For trip dates within 16 days, use the standard forecast tool.
+            3. For dates between 16 and 90 days, use the 'seasonal_forecast' or 'climate' 
+                capabilities of the Open-Meteo tool to provide estimated conditions.
+    
+            Analyze temperature trends and precipitation likelihood. Even for long-range 
+            dates (up to 90 days), provide a report based on historical climate models.
 
-            Focus on meterology.
-            Predict temperature swings, precipitation chances, and humidity.
-            
             Output your findings as a concise report for the next agent.
             """,
             output_key="weather_report"
